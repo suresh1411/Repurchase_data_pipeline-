@@ -1,6 +1,6 @@
 MERGE `suresh-dataengineering.Golden_layer.Repurchased_curated_data` T
 USING 
-(SELECT *FROM suresh-dataengineering.Silver_layer.customers_stage_data
+(SELECT *FROM suresh-dataengineering.Silver_layer.Repurchase_stage_data
 QUALIFY ROW_NUMBER() OVER (
         PARTITION BY CID,UPC,OID,DT,R_DT,PRC,QTY,AMT,R_QTY,R_AMT,WEB_PROD_ID,GMM_DESC,
         PARENT_MDSE_DIVN_DESC
