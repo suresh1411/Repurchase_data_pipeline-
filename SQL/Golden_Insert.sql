@@ -3,16 +3,7 @@ MERGE `suresh-dataengineering.Golden_layer.Repurchased_curated_data` AS T
 
 USING (
     SELECT *
-    FROM `suresh-dataengineering.Silver_layer.Repurchase_stage_data`
-
-    QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY
-            CID, UPC, OID, DT, R_DT, PRC, QTY, AMT,
-            R_QTY, R_AMT, WEB_PROD_ID, GMM_DESC,
-            PARENT_MDSE_DIVN_DESC
-        ORDER BY Loaded_timestamp DESC
-    ) = 1
-) AS S
+    FROM `suresh-dataengineering.Silver_layer.Repurchase_stage_data`) AS S
 
 ON  T.CUSTOMER_ID = S.CID
 AND T.ORDER_ID = S.OID
