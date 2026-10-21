@@ -148,7 +148,7 @@ with DAG(
         location=LOCATION,
         configuration={
             "query": {
-                "query": read_sql("Golden_Expire.sql"),
+                "query": read_sql("Goden_Expire.sql"),
                 "useLegacySql": False,
             }
         },
