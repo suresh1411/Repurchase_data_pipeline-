@@ -37,7 +37,7 @@ WITH deduplicated AS (
             WEB_PROD_ID,
             GMM_DESC,
             PARENT_MDSE_DIVN_DESC
-        ORDER BY Loaded_timestamp DESC
+        ORDER BY Loaded_timestamp DESC 
     ) = 1
 )
 
@@ -69,8 +69,7 @@ SELECT
 
     GMM_DESC,
     PARENT_MDSE_DIVN_DESC,
-    CURRENT_TIMESTAMP() as Loaded_timestamp
-
+    CURRENT_TIMESTAMP() AS Loaded_timestamp
 FROM deduplicated
 
 WHERE SAFE_CAST(CID AS INT64) IS NOT NULL;
