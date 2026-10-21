@@ -1,0 +1,20 @@
+steps:
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args:
+      - 'cp'
+      - 'DAG/Repurchase_data_usacase.py'
+      - 'gs://us-central1-sureshdag-2174faaa-bucket/dags/Repurchase_data_usacase.py'
+
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args:
+      - '-m'
+      - 'cp'
+      - 'SQL/Bronze.sql'
+      - 'SQL/Silver.sql'
+      - 'SQL/Golden_Create.sql'
+      - 'SQL/Golden_Insert.sql'
+      - 'SQL/Golden_Expire.sql'
+      - 'gs://us-central1-sureshdag-2174faaa-bucket/dags/SQL/'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
