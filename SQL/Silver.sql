@@ -36,8 +36,7 @@ WITH deduplicated AS (
             R_AMT,
             WEB_PROD_ID,
             GMM_DESC,
-            PARENT_MDSE_DIVN_DESC
-        ORDER BY Loaded_timestamp DESC 
+            PARENT_MDSE_DIVN_DESC 
     ) = 1
 )
 
