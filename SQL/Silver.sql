@@ -69,7 +69,7 @@ SELECT
 
     GMM_DESC,
     PARENT_MDSE_DIVN_DESC,
-    Loaded_timestamp
+    CURRENT_TIMESTAMP() as Loaded_timestamp
 
 FROM deduplicated
 
