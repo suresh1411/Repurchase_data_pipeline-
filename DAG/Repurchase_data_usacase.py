@@ -43,20 +43,18 @@ GOLDEN_TABLE = (
 #   SQL/Golden_Insert.sql
 # ==================================================
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-SQL_DIR = PROJECT_DIR / "SQL"
-
+DAG_DIR = Path(__file__).resolve().parent
+SQL_DIR = DAG_DIR / "SQL"
 
 def read_sql(filename):
-    sql_path = SQL_DIR / filename
+    sql_file = SQL_DIR / filename
 
-    if not sql_path.is_file():
+    if not sql_file.exists():
         raise FileNotFoundError(
-            f"SQL file not found: {sql_path}"
+            f"SQL file not found: {sql_file}"
         )
 
-    return sql_path.read_text(encoding="utf-8")
-
+    return sql_file.read_text(encoding="utf-8")
 
 # ==================================================
 # DAG
