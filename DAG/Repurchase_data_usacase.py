@@ -43,6 +43,7 @@ GOLDEN_TABLE = (
 #   SQL/Golden_Insert.sql
 # ==================================================
 
+
 DAG_DIR = Path(__file__).resolve().parent
 SQL_DIR = DAG_DIR / "SQL"
 
@@ -55,6 +56,7 @@ def read_sql(filename):
         )
 
     return sql_file.read_text(encoding="utf-8")
+
 
 # ==================================================
 # DAG
