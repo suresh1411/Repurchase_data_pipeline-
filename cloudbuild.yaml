@@ -3,7 +3,7 @@ steps:
     args:
       - 'cp'
       - 'DAG/Repurchase_data_usacase.py'
-      - 'gs://us-central1-sureshdag-2174faaa-bucket/dags/Repurchase_data_usacase.py'
+      - 'gs://us-central1-sureshdag-83e65c8d-bucket/dags/Repurchase_data_usacase.py'
 
   - name: 'gcr.io/cloud-builders/gsutil'
     args:
@@ -14,7 +14,7 @@ steps:
       - 'SQL/Golden_Create.sql'
       - 'SQL/Golden_Insert.sql'
       - 'SQL/Golden_Expire.sql'
-      - 'gs://us-central1-sureshdag-2174faaa-bucket/dags/SQL/'
+      - 'gs://us-central1-sureshdag-83e65c8d-bucket/dags/SQL/'
 
 options:
   logging: CLOUD_LOGGING_ONLY
