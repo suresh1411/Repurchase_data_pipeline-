@@ -1,20 +1,19 @@
-steps:
-  - name: 'gcr.io/cloud-builders/gsutil'
-    args:
-      - 'cp'
-      - 'DAG/Repurchase_data_usacase.py'
-      - 'gs://us-central1-sureshdag-83e65c8d-bucket/dags/Repurchase_data_usacase.py'
 
-  - name: 'gcr.io/cloud-builders/gsutil'
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/google-cloud-cli:stable'
+    entrypoint: 'bash'
     args:
-      - '-m'
-      - 'cp'
-      - 'SQL/Bronze.sql'
-      - 'SQL/Silver.sql'
-      - 'SQL/Golden_Create.sql'
-      - 'SQL/Golden_Insert.sql'
-      - 'SQL/Golden_Expire.sql'
-      - 'gs://us-central1-sureshdag-83e65c8d-bucket/dags/SQL/'
+      - '-c'
+      - |
+        set -e
+
+        echo "Uploading DAG files to Cloud Composer..."
+        gsutil -m cp DAG/*.py gs://us-central1-sureshdag-fe9389ec-bucket/dags/
+
+        echo "Uploading SQL files to Cloud Composer..."
+        gsutil -m rsync -r SQL gs://us-central1-sureshdag-fe9389ec-bucket/dags/SQL
+
+        echo "Deployment completed."
 
 options:
   logging: CLOUD_LOGGING_ONLY
