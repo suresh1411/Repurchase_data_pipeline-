@@ -672,4 +672,5 @@ with DAG(
 
     silver_audit >> create_golden
 
+    
     create_golden >> expire_golden >> insert_golden >> golden_audit
