@@ -1,5 +1,5 @@
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from airflow import DAG
@@ -12,6 +12,7 @@ from airflow.providers.google.cloud.operators.bigquery import (
 from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
     GCSToBigQueryOperator,
 )
+
 
 # ==================================================
 # CONFIGURATION
@@ -48,6 +49,10 @@ DAG_DIR = Path(__file__).resolve().parent
 SQL_DIR = DAG_DIR / "SQL"
 
 
+# ==================================================
+# COMMON FUNCTIONS
+# ==================================================
+
 def read_sql(filename):
     sql_file = SQL_DIR / filename
 
@@ -69,17 +74,82 @@ def get_client():
 
 
 def get_count(client, table, condition=None):
-    query = f"SELECT COUNT(*) FROM `{table}`"
+    query = f"SELECT COUNT(*) AS record_count FROM `{table}`"
 
     if condition:
         query += f" WHERE {condition}"
 
-    return int(next(iter(client.query(query).result())).values()[0])
+    row = next(iter(
+        client.query(query, location=LOCATION).result()
+    ))
+    return int(row["record_count"])
+
+
+def get_task_run_details(context, task_id):
+    """Get a task instance from the current DAG run."""
+    dag_run = context["dag_run"]
+
+    task_instance = dag_run.get_task_instance(
+        task_id=task_id,
+        map_index=-1,
+    )
+
+    if task_instance is None:
+        raise ValueError(
+            f"Task instance not found: {task_id}"
+        )
+
+    return task_instance
+
+
+def get_task_job_id(context, task_id):
+    """Read and validate the BigQuery job ID returned through XCom."""
+    ti = context["ti"]
+
+    job_id = ti.xcom_pull(
+        task_ids=task_id,
+        key="return_value",
+    )
+
+    # Handle providers that return a dictionary.
+    if isinstance(job_id, dict):
+        job_id = job_id.get("job_id")
+
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise ValueError(
+            f"BigQuery job ID not found in XCom for {task_id}. "
+            "Check the operator logs and provider version."
+        )
+
+    return job_id
+
+
+def get_dml_affected_rows(client, context, task_id):
+    job_id = get_task_job_id(context, task_id)
+
+    job = client.get_job(
+        job_id,
+        project=PROJECT_ID,
+        location=LOCATION,
+    )
+
+    job.result()
+
+    affected_rows = job.num_dml_affected_rows
+
+    if affected_rows is None:
+        raise ValueError(
+            f"BigQuery did not return DML affected-row statistics "
+            f"for job {job_id}"
+        )
+
+    return int(affected_rows)
 
 
 def insert_audit(client, table, columns, values):
-    # Values are internal pipeline values. Use SQL parameters
-    # for safe insertion rather than interpolating values.
+    """Insert an audit row using BigQuery query parameters."""
+    from google.cloud import bigquery
+
     placeholders = ", ".join(
         f"@p{i}" for i in range(len(values))
     )
@@ -90,15 +160,8 @@ def insert_audit(client, table, columns, values):
         VALUES ({placeholders})
     """
 
-    from google.cloud import bigquery
-
-    parameter_types = {
-        str: "STRING",
-        int: "INT64",
-        type(None): "STRING",
-    }
-
     parameters = []
+
     for i, value in enumerate(values):
         if isinstance(value, datetime):
             parameters.append(
@@ -106,22 +169,44 @@ def insert_audit(client, table, columns, values):
                     f"p{i}", "TIMESTAMP", value
                 )
             )
+        elif isinstance(value, bool):
+            parameters.append(
+                bigquery.ScalarQueryParameter(
+                    f"p{i}", "BOOL", value
+                )
+            )
+        elif isinstance(value, int):
+            parameters.append(
+                bigquery.ScalarQueryParameter(
+                    f"p{i}", "INT64", value
+                )
+            )
+        elif isinstance(value, float):
+            parameters.append(
+                bigquery.ScalarQueryParameter(
+                    f"p{i}", "FLOAT64", value
+                )
+            )
         else:
             parameters.append(
                 bigquery.ScalarQueryParameter(
-                    f"p{i}",
-                    parameter_types.get(type(value), "STRING"),
-                    value,
+                    f"p{i}", "STRING", value
                 )
             )
 
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=parameters
+    )
+
     client.query(
         query,
-        job_config=bigquery.QueryJobConfig(
-            query_parameters=parameters
-        ),
+        job_config=job_config,
         location=LOCATION,
     ).result()
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
 # ==================================================
@@ -134,56 +219,59 @@ def create_audit_tables():
     statements = [
         f"""
         CREATE TABLE IF NOT EXISTS `{BRONZE_AUDIT}` (
-          USECASE_NAME STRING,
-          RUN_ID STRING,
-          SOURCE_FILE STRING,
-          RECORDS_LOADED_THIS_RUN INT64,
-          TOTAL_RECORDS_IN_BRONZE INT64,
-          LOAD_STATUS STRING,
-          START_TIME TIMESTAMP,
-          END_TIME TIMESTAMP,
-          ERROR_MESSAGE STRING,
-          CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+            USECASE_NAME STRING,
+            RUN_ID STRING,
+            SOURCE_FILE STRING,
+            RECORDS_LOADED_THIS_RUN INT64,
+            TOTAL_RECORDS_IN_BRONZE INT64,
+            LOAD_STATUS STRING,
+            START_TIME TIMESTAMP,
+            END_TIME TIMESTAMP,
+            ERROR_MESSAGE STRING,
+            CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
         )
         """,
         f"""
         CREATE TABLE IF NOT EXISTS `{SILVER_AUDIT}` (
-          USECASE_NAME STRING,
-          RUN_ID STRING,
-          SOURCE_TABLE STRING,
-          TARGET_TABLE STRING,
-          BRONZE_COUNT INT64,
-          DUPLICATE_COUNT INT64,
-          SILVER_COUNT INT64,
-          REJECTED_COUNT INT64,
-          LOAD_STATUS STRING,
-          START_TIME TIMESTAMP,
-          END_TIME TIMESTAMP,
-          ERROR_MESSAGE STRING,
-          CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+            USECASE_NAME STRING,
+            RUN_ID STRING,
+            SOURCE_TABLE STRING,
+            TARGET_TABLE STRING,
+            BRONZE_COUNT INT64,
+            DUPLICATE_COUNT INT64,
+            SILVER_COUNT INT64,
+            REJECTED_COUNT INT64,
+            LOAD_STATUS STRING,
+            START_TIME TIMESTAMP,
+            END_TIME TIMESTAMP,
+            ERROR_MESSAGE STRING,
+            CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
         )
         """,
         f"""
         CREATE TABLE IF NOT EXISTS `{GOLDEN_AUDIT}` (
-          USECASE_NAME STRING,
-          RUN_ID STRING,
-          SOURCE_TABLE STRING,
-          TARGET_TABLE STRING,
-          SILVER_COUNT INT64,
-          GOLDEN_INSERT_COUNT INT64,
-          GOLDEN_EXPIRE_COUNT INT64,
-          GOLDEN_ACTIVE_COUNT INT64,
-          LOAD_STATUS STRING,
-          START_TIME TIMESTAMP,
-          END_TIME TIMESTAMP,
-          ERROR_MESSAGE STRING,
-          CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+            USECASE_NAME STRING,
+            RUN_ID STRING,
+            SOURCE_TABLE STRING,
+            TARGET_TABLE STRING,
+            SILVER_COUNT INT64,
+            GOLDEN_INSERT_COUNT INT64,
+            GOLDEN_EXPIRE_COUNT INT64,
+            GOLDEN_ACTIVE_COUNT INT64,
+            LOAD_STATUS STRING,
+            START_TIME TIMESTAMP,
+            END_TIME TIMESTAMP,
+            ERROR_MESSAGE STRING,
+            CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
         )
         """,
     ]
 
     for statement in statements:
-        client.query(statement, location=LOCATION).result()
+        client.query(
+            statement,
+            location=LOCATION,
+        ).result()
 
 
 # ==================================================
@@ -193,27 +281,22 @@ def create_audit_tables():
 def record_bronze_audit(**context):
     client = get_client()
 
+    load_task = get_task_run_details(
+        context,
+        "load_csv_directly_to_bronze",
+    )
+
+    if load_task.state != "success":
+        raise ValueError(
+            f"Bronze load did not succeed: {load_task.state}"
+        )
+
+    # Bronze is WRITE_TRUNCATE, so the table count after
+    # a successful load represents the current file's rows.
     bronze_count = get_count(client, BRONZE_TABLE)
 
-    # Bronze uses WRITE_TRUNCATE, so after a successful load,
-    # its row count is the current file's successfully loaded count.
-    task_instance = context["ti"]
-    load_task = task_instance.get_task_instance(
-        "load_csv_directly_to_bronze"
-    )
-
-    start_time = (
-        load_task.start_date
-        if load_task and load_task.start_date
-        else datetime.utcnow()
-    )
-    end_time = (
-        load_task.end_date
-        if load_task and load_task.end_date
-        else datetime.utcnow()
-    )
-
-    run_id = context["run_id"]
+    start_time = load_task.start_date or utc_now()
+    end_time = load_task.end_date or utc_now()
 
     insert_audit(
         client,
@@ -231,7 +314,7 @@ def record_bronze_audit(**context):
         ],
         [
             USECASE_NAME,
-            run_id,
+            context["run_id"],
             f"gs://{BUCKET_NAME}/{SOURCE_FILE}",
             bronze_count,
             bronze_count,
@@ -242,6 +325,9 @@ def record_bronze_audit(**context):
         ],
     )
 
+    print(f"Bronze count: {bronze_count}")
+    print("Bronze audit inserted successfully.")
+
 
 # ==================================================
 # SILVER AUDIT
@@ -250,43 +336,59 @@ def record_bronze_audit(**context):
 def record_silver_audit(**context):
     client = get_client()
 
+    silver_task = get_task_run_details(
+        context,
+        "load_silver",
+    )
+
+    if silver_task.state != "success":
+        raise ValueError(
+            f"Silver load did not succeed: {silver_task.state}"
+        )
+
     bronze_count = get_count(client, BRONZE_TABLE)
     silver_count = get_count(client, SILVER_TABLE)
 
-    # Count exact duplicate source rows using the same columns
+    # Count exact duplicate rows using the source columns
     # used by the deduplication logic in Silver.sql.
     duplicate_query = f"""
-        SELECT COUNT(*) - COUNT(DISTINCT TO_JSON_STRING(STRUCT(
-            CID, UPC, OID, DT, R_DT, PRC, QTY, AMT,
-            R_QTY, R_AMT, WEB_PROD_ID, GMM_DESC,
-            PARENT_MDSE_DIVN_DESC
-        )))
+        SELECT
+            COUNT(*) -
+            COUNT(DISTINCT TO_JSON_STRING(STRUCT(
+                CID,
+                UPC,
+                OID,
+                DT,
+                R_DT,
+                PRC,
+                QTY,
+                AMT,
+                R_QTY,
+                R_AMT,
+                WEB_PROD_ID,
+                GMM_DESC,
+                PARENT_MDSE_DIVN_DESC
+            ))) AS duplicate_count
         FROM `{BRONZE_TABLE}`
     """
-    duplicate_count = int(
-        next(iter(client.query(duplicate_query).result()))
-        .values()[0]
-    )
 
-    # Match the filter in Silver.sql.
+    duplicate_row = next(iter(
+        client.query(
+            duplicate_query,
+            location=LOCATION,
+        ).result()
+    ))
+    duplicate_count = int(duplicate_row["duplicate_count"])
+
+    # Match the invalid-CID filter in Silver.sql.
     rejected_count = get_count(
         client,
         BRONZE_TABLE,
         "SAFE_CAST(CID AS INT64) IS NULL",
     )
 
-    ti = context["ti"]
-    silver_task = ti.get_task_instance("load_silver")
-    start_time = (
-        silver_task.start_date
-        if silver_task and silver_task.start_date
-        else datetime.utcnow()
-    )
-    end_time = (
-        silver_task.end_date
-        if silver_task and silver_task.end_date
-        else datetime.utcnow()
-    )
+    start_time = silver_task.start_date or utc_now()
+    end_time = silver_task.end_date or utc_now()
 
     insert_audit(
         client,
@@ -321,6 +423,12 @@ def record_silver_audit(**context):
         ],
     )
 
+    print(f"Bronze count: {bronze_count}")
+    print(f"Exact duplicate count: {duplicate_count}")
+    print(f"Rejected CID count: {rejected_count}")
+    print(f"Silver count: {silver_count}")
+    print("Silver audit inserted successfully.")
+
 
 # ==================================================
 # GOLDEN AUDIT
@@ -328,58 +436,47 @@ def record_silver_audit(**context):
 
 def record_golden_audit(**context):
     client = get_client()
-    ti = context["ti"]
 
-    # The BigQueryInsertJobOperator returns its BigQuery job ID
-    # through XCom. Read each job's DML affected-row statistics.
-    expire_job_id = ti.xcom_pull(
-        task_ids="expire_golden_records"
+    expire_task = get_task_run_details(
+        context,
+        "expire_golden_records",
     )
-    insert_job_id = ti.xcom_pull(
-        task_ids="insert_golden_records"
+    insert_task = get_task_run_details(
+        context,
+        "insert_golden_records",
     )
 
-    if not expire_job_id or not insert_job_id:
+    if expire_task.state != "success":
         raise ValueError(
-            "Golden MERGE job IDs are missing; cannot record "
-            "reliable per-run DML counts."
+            f"Golden expire task failed: {expire_task.state}"
         )
 
-    expire_job = client.get_job(
-        expire_job_id,
-        project=PROJECT_ID,
-        location=LOCATION,
-    )
-    insert_job = client.get_job(
-        insert_job_id,
-        project=PROJECT_ID,
-        location=LOCATION,
-    )
+    if insert_task.state != "success":
+        raise ValueError(
+            f"Golden insert task failed: {insert_task.state}"
+        )
 
-    # Golden_Expire.sql only updates active records.
-    expired_count = int(expire_job.num_dml_affected_rows or 0)
-
-    # Golden_Insert.sql only inserts unmatched records.
-    inserted_count = int(insert_job.num_dml_affected_rows or 0)
+    # Read the actual BigQuery DML statistics for this run.
+    expired_count = get_dml_affected_rows(
+        client,
+        context,
+        "expire_golden_records",
+    )
+    inserted_count = get_dml_affected_rows(
+        client,
+        context,
+        "insert_golden_records",
+    )
 
     silver_count = get_count(client, SILVER_TABLE)
     active_count = get_count(
-        client, GOLDEN_TABLE, "IS_ACTIVE = TRUE"
+        client,
+        GOLDEN_TABLE,
+        "IS_ACTIVE = TRUE",
     )
 
-    expire_task = ti.get_task_instance("expire_golden_records")
-    insert_task = ti.get_task_instance("insert_golden_records")
-
-    start_time = (
-        expire_task.start_date
-        if expire_task and expire_task.start_date
-        else datetime.utcnow()
-    )
-    end_time = (
-        insert_task.end_date
-        if insert_task and insert_task.end_date
-        else datetime.utcnow()
-    )
+    start_time = expire_task.start_date or utc_now()
+    end_time = insert_task.end_date or utc_now()
 
     insert_audit(
         client,
@@ -414,9 +511,15 @@ def record_golden_audit(**context):
         ],
     )
 
+    print(f"Silver count: {silver_count}")
+    print(f"Golden inserted count: {inserted_count}")
+    print(f"Golden expired count: {expired_count}")
+    print(f"Golden active count: {active_count}")
+    print("Golden audit inserted successfully.")
+
 
 # ==================================================
-# DAG
+# DAG DEFINITION
 # ==================================================
 
 with DAG(
@@ -432,10 +535,15 @@ with DAG(
     tags=["repurchase", "gcp", "bigquery", "audit"],
 ) as dag:
 
+    # Create the audit tables before starting the pipeline.
     create_audit_tables_task = PythonOperator(
         task_id="create_repurchase_audit_tables",
         python_callable=create_audit_tables,
     )
+
+    # ------------------------------
+    # BRONZE
+    # ------------------------------
 
     create_bronze = BigQueryInsertJobOperator(
         task_id="create_bronze_table",
@@ -471,7 +579,10 @@ with DAG(
             {"name": "R_AMT", "type": "STRING"},
             {"name": "WEB_PROD_ID", "type": "STRING"},
             {"name": "GMM_DESC", "type": "STRING"},
-            {"name": "PARENT_MDSE_DIVN_DESC", "type": "STRING"},
+            {
+                "name": "PARENT_MDSE_DIVN_DESC",
+                "type": "STRING",
+            },
         ],
         create_disposition="CREATE_NEVER",
         write_disposition="WRITE_TRUNCATE",
@@ -482,6 +593,10 @@ with DAG(
         task_id="record_repurchase_bronze_audit",
         python_callable=record_bronze_audit,
     )
+
+    # ------------------------------
+    # SILVER
+    # ------------------------------
 
     load_silver = BigQueryInsertJobOperator(
         task_id="load_silver",
@@ -499,6 +614,10 @@ with DAG(
         task_id="record_repurchase_silver_audit",
         python_callable=record_silver_audit,
     )
+
+    # ------------------------------
+    # GOLDEN / SCD TYPE 2
+    # ------------------------------
 
     create_golden = BigQueryInsertJobOperator(
         task_id="create_golden_table",
@@ -546,7 +665,11 @@ with DAG(
     # ==================================================
 
     create_audit_tables_task >> create_bronze
+
     create_bronze >> load_bronze >> bronze_audit
+
     bronze_audit >> load_silver >> silver_audit
-    silver_audit >> create_golden >> expire_golden
-    expire_golden >> insert_golden >> golden_audit
+
+    silver_audit >> create_golden
+
+    create_golden >> expire_golden >> insert_golden >> golden_audit
